@@ -535,19 +535,192 @@ def optimal_weights(n_points, er, cov):
     return weights
 
 
-def plot_ef(n_points, er, cov, style='.-'):
+def MSR(risk_free_return, er, cov):
+    '''
+    Takes risk_free_return, expected returns of stocks and covariance
+    matrix of stocks and returns a weight vector, which can be used to find
+    the MSR portfolio
+
+    Inputs:
+        risk_free_return: risk free return
+        er: expected returns of all the assets
+        cov: covariance matrix of all the asset returns
+        The risk_free_return and er must be on the same time units
+    Output:
+        A weight vector
+
+    To find the efficient frontier, we did the following:
+    1.  Get a series of returns between the R_Min and R_Max, where R_min ts the
+        minimum rate of an asset in the protfolio and R_Max is the maximum
+        rate of an asset in the portfolio
+    2.  For each return in the returns series:
+        a.  Find the optimal weights such that the volatility of the portfolio
+            is minimal
+
+    To find the efficient frontier, we do NOT use any series of returns. But we
+    will still find the optimal weights by maximizing the sharpe ratio of the
+    portfolio.
+
+    Since there is NO maximize() function in scipy.optimize package, we use the
+    minimize() function, and try to minimize the negative sharpe ratio
+    '''
+
+    # Get the number of assets:
+    n = er.shape[0]
+
+    # Initialize weights
+    init_guess = np.repeat(1/n, n)
+
+    # Define bounds
+    bounds = ((0, 1),) * n
+
+    # Constraints on the sum of weights
+    weights_sum_to_1 = {
+        'type': 'eq',
+        'fun': lambda weights: np.sum(weights) - 1
+    }
+
+    # Define an inline function to get the negative sharpe ratio
+    def neg_sharpe_ratio(weights,
+                         risk_free_return,
+                         er,
+                         cov):
+        pr = portfolio_return(weights, er)
+        vol = portfolio_volatility(weights, cov)
+
+        return -(pr - risk_free_return)/(vol)
+
+    # Minimize the negative sharpe ratio
+    results = minimize(neg_sharpe_ratio,
+                       init_guess,
+                       args=(risk_free_return, er, cov),
+                       method='SLSQP',
+                       options={'disp': False},
+                       constraints=(weights_sum_to_1),
+                       bounds=bounds
+                       )
+    return results.x
+
+
+def GMV(cov):
+    '''
+    Find the Global Minimum Variance Portfolio.
+    The GMV is only dependent on the covariance matrix.
+
+    Input:
+        A covariance matric (Pandas Data Frame)
+    Output:
+        A weight vector for the minimum variance portfolio
+    '''
+    # Get the number of assets
+    n = cov.shape[0]
+
+    # As we are re-using MSR() function, let us assign
+    # some value to the risk_free_return, as it really does not matter
+    # what value you assign
+    rf = 0
+
+    # The following call will get optimal weights for the postfolio
+    # containing assets that have the same returns.
+    # This will indirectly minimize the denominator,
+    # which is the variance of the portfolio
+
+    return MSR(risk_free_return=rf, er=np.repeat(1, n), cov=cov)
+
+
+def plot_ef(n_points,
+            er,
+            cov,
+            risk_free_return=0.0,
+            show_cml=False,
+            show_ew=False,
+            show_gmv=False,
+            style='.-'):
+    '''
+    Plots the risk-return curve
+    Inputs:
+        n_points: Number of target return values to be considered between the
+                  minimum return and maximum return (min and max of all asset
+                  returns), including the min and max values.
+        er: Expected returns of all the assets.
+        cov: Covariance matrix of all the asset returns.
+        risk_free_rate: Risk Free Rate.
+        show_cml: If True, displays the capital Market Line (CML).
+        show_ew: If True, displays the Equal Weighted Portfolio.
+                 This usually does not lie on the risk-return curve.
+                 This portfolio is independent of the assets returns
+                 and assets covariance matrix. This means this is free of
+                 estimation errors.
+         show_gmv: If True, displays the global Minimum Variance portfolio
+                 GMV is dependent only on the covariance of the assets returns.
+                 It is NOT dependnet on the assets returns.
+         sryle: Controls the line style.
+    '''
+    # Get the optimal weights for the given covariance and expected returns
+    # All these weights correspond to a target return.
+    # We choose different target returns between the min and max returns of the
+    # assets inside the portfolio
     weights = optimal_weights(n_points, er, cov)
 
-    # Generate returns:
+    # Generate returns for each set of optimal weights:
     rets = [portfolio_return(w, er) for w in weights]
 
-    # Generate volatility:
+    # Generate volatility for each set of optimal weights:
     vol = [portfolio_volatility(w, cov) for w in weights]
 
+    # Create a data frame
     ef = pd.DataFrame({'Returns': rets,
                        'Volatility': vol})
 
-    return ef.plot.line(x='Volatility', y='Returns', style=style)
+    # Plot the risk-return curve
+    ax = ef.plot.line(x='Volatility', y='Returns', style=style)
+
+    # Let us plot the equal weighted portfolio
+    if show_ew:
+        n = er.shape[0]
+
+        # Generate equal weights vector
+        w_ew = np.repeat(1/n, n)
+
+        # Get the portfolio return with the above weights
+        r_ew = portfolio_return(w_ew, er)
+
+        # Get the portfolio volatility with the above weights
+        vol_ew = portfolio_volatility(w_ew, cov)
+
+        # Add EW portfolio point
+        ax.plot([vol_ew], [r_ew], color='goldenrod', marker='o', markersize=10)
+
+    # Let us plot the GMV portfolio
+    if show_gmv:
+        # Get the optimal weights for the minimum variance portfolio
+        w_gmv = GMV(cov)
+
+        # Get the portfolio volatility with the above weights
+        r_gmv = portfolio_return(w_gmv, er)
+
+        # Get the portfolio volatility with the above weights
+        vol_gmv = portfolio_volatility(w_gmv, cov)
+
+        # Add GMV portfolio point
+        ax.plot([vol_gmv], [r_gmv], color='midnightblue', marker='o', markersize=10)
+
+    # Let us plot the CML (Capital Market Line)
+    if show_cml:
+        ax.set_xlim(left=0)
+
+        # Get the weights of Maximum Sharpe Ratio Protfolio
+        w_msr = MSR(risk_free_return, er, cov)
+        r_msr = portfolio_return(w_msr, er)
+        vol_msr = portfolio_volatility(w_msr, cov)
+
+        # Add CML Line
+        cml_x = [0, vol_msr]
+        cml_y = [risk_free_return, r_msr]
+
+        ax.plot(cml_x, cml_y, color='green', marker='o', linestyle='dashed',
+                markersize=12, linewidth=2)
+        return ax
 
 
 def main():
